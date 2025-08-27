@@ -1,5 +1,5 @@
 import { Browserbase } from "@browserbasehq/sdk";
-import { Browser, chromium } from "playwright";
+import { Browser, chromium, FileChooser } from "playwright";
 import dotenv from "dotenv";
 import fs from "fs";
 import os from "os";
@@ -20,6 +20,8 @@ import {
   ActOptions,
   ExtractOptions,
   ObserveOptions,
+  FileSpec,
+  UploadResult,
 } from "../types/stagehand";
 import { StagehandContext } from "./StagehandContext";
 import { StagehandPage } from "./StagehandPage";
@@ -34,6 +36,10 @@ import { AgentExecuteOptions, AgentResult } from "../types/agent";
 import { StagehandAgentHandler } from "./handlers/agentHandler";
 import { StagehandOperatorHandler } from "./handlers/operatorHandler";
 import { StagehandLogger } from "./logger";
+import {
+  deepLocator,
+  deepLocatorWithShadow,
+} from "./handlers/handlerUtils/actHandlerUtils";
 
 import {
   StagehandError,
@@ -892,6 +898,7 @@ export class Stagehand {
       | ExtractOptions<z.AnyZodObject>
       | ObserveOptions
       | { url: string; options: GotoOptions }
+      | { hint: string; file: FileSpec }
       | string,
     result?: unknown,
   ): void {
@@ -900,6 +907,351 @@ export class Stagehand {
       parameters,
       result: result ?? null,
       timestamp: new Date().toISOString(),
+    });
+  }
+
+  /**
+   * Upload a file to an upload control identified by a natural language hint.
+   * This method will attempt, in order:
+   *  1) Directly set files on a matching <input type="file"> (visible or hidden).
+   *  2) Trigger a file chooser by clicking the hinted control, then set files.
+   *  3) Heuristically locate an associated file input near/within the hinted element.
+   */
+  public async upload(hint: string, file: FileSpec): Promise<UploadResult> {
+    const page = this.stagehandPage.page;
+
+    const toSetInputArg = (f: FileSpec) => {
+      if (typeof f === "string") return f;
+      if (f?.path) return f.path;
+      if (f?.buffer && f?.name && f?.mimeType) {
+        return { name: f.name, mimeType: f.mimeType, buffer: f.buffer } as {
+          name: string;
+          mimeType: string;
+          buffer: Buffer;
+        };
+      }
+      throw new StagehandError(
+        "Invalid FileSpec. Provide a path or { buffer, name, mimeType }",
+      );
+    };
+
+    const filesArg = toSetInputArg(file);
+
+    const finish = async (result: UploadResult): Promise<UploadResult> => {
+      this.addToHistory("upload", { hint, file }, result);
+      return result;
+    };
+
+    // 0) Fast-path: obvious file inputs commonly used by simple forms
+    try {
+      const quickSelectors = ['input[type="file"]'];
+      for (const sel of quickSelectors) {
+        const loc = this.stagehandPage.page.locator(sel);
+        const found = await loc.count();
+        this.log({
+          category: "upload",
+          message: `quick selector scan`,
+          level: 1,
+          auxiliary: {
+            selector: { value: sel, type: "string" },
+            count: { value: String(found), type: "integer" },
+          },
+        });
+        if (found) {
+          try {
+            await loc.first().setInputFiles(filesArg);
+            // Do not require files.length here; some browsers mask it
+            await this.stagehandPage._waitForSettledDom();
+            return finish({
+              success: true,
+              method: "input",
+              hint,
+              selector: sel,
+              fileName:
+                typeof file === "string" ? file.split("/").pop() : file?.name,
+              message: "File attached via quick selector",
+            });
+          } catch (e) {
+            this.log({
+              category: "upload",
+              message: "setInputFiles via quick selector failed",
+              level: 1,
+              auxiliary: {
+                selector: { value: sel, type: "string" },
+                error: { value: String((e as Error).message), type: "string" },
+              },
+            });
+          }
+        }
+      }
+    } catch {
+      void 0; // ignore quick path errors
+    }
+
+    // 0.5) Generic chooser fallback via common button roles/names
+    try {
+      const roleButtons = [
+        this.stagehandPage.page.getByRole("button", { name: /choose file/i }),
+        this.stagehandPage.page.getByRole("button", { name: /browse/i }),
+        this.stagehandPage.page.getByRole("button", { name: /upload/i }),
+      ];
+
+      for (const btn of roleButtons) {
+        if (await btn.count()) {
+          const chooserPromise = this.stagehandPage.page.waitForEvent(
+            "filechooser",
+            { timeout: 5000 },
+          );
+          await btn
+            .first()
+            .click({ timeout: 2500 })
+            .catch((): void => {});
+          const chooser = await chooserPromise.catch(
+            (): FileChooser | undefined => undefined,
+          );
+          if (chooser) {
+            await chooser.setFiles(filesArg);
+            await this.stagehandPage._waitForSettledDom();
+            return finish({
+              success: true,
+              method: "chooser",
+              hint,
+              selector: 'role=button[name~="choose file"|"browse"|"upload"]',
+              fileName:
+                typeof file === "string" ? file.split("/").pop() : file?.name,
+              message: "File attached via role-based chooser",
+            });
+          }
+        }
+      }
+    } catch {
+      void 0; // ignore
+    }
+
+    // 1) Prefer a direct file input if we can find one by NL → selector
+    try {
+      const [candidate] = await page.observe(
+        "find the file upload control or input for: " + String(hint),
+      );
+      if (candidate?.selector) {
+        const raw = candidate.selector.replace(/^xpath=/i, "").trim();
+        // Use the same locator resolution strategy as act() does
+        const locator = this.experimental
+          ? await deepLocatorWithShadow(page, raw)
+          : deepLocator(page, raw);
+
+        // If this is a file input → set directly
+        const isFileInput = await locator
+          .evaluate(
+            (el): boolean =>
+              el.tagName.toLowerCase() === "input" &&
+              (el as HTMLInputElement).type === "file",
+          )
+          .catch(() => false);
+
+        if (isFileInput) {
+          await locator.setInputFiles(filesArg);
+          await this.stagehandPage._waitForSettledDom();
+          return finish({
+            success: true,
+            method: "input",
+            hint,
+            selector: candidate.selector,
+            fileName:
+              typeof file === "string" ? file.split("/").pop() : file?.name,
+            message: "File attached via direct input",
+          });
+        }
+
+        // Try the filechooser path by clicking the hinted control
+        try {
+          const chooserPromise = page.waitForEvent("filechooser", {
+            timeout: 5000,
+          });
+          await locator.click({ timeout: 2500 }).catch((): void => {});
+          const chooser = await chooserPromise.catch(
+            (): FileChooser | undefined => undefined,
+          );
+          if (chooser) {
+            await chooser.setFiles(filesArg);
+            await this.stagehandPage._waitForSettledDom();
+            return finish({
+              success: true,
+              method: "chooser",
+              hint,
+              selector: candidate.selector,
+              fileName:
+                typeof file === "string" ? file.split("/").pop() : file?.name,
+              message: "File attached via file chooser",
+            });
+          }
+        } catch {
+          void 0; // continue to heuristics below
+        }
+
+        // Heuristic: find an associated file input near/within the hinted control
+        try {
+          const elementHandle = await locator.elementHandle();
+          if (elementHandle) {
+            const inputHandle = await elementHandle.evaluateHandle(
+              (el: Element): HTMLInputElement | null => {
+                const doc: Document = el.ownerDocument || document;
+                const asInput = (n: Element | null): HTMLInputElement | null =>
+                  n &&
+                  n.tagName.toLowerCase() === "input" &&
+                  (n as HTMLInputElement).type === "file"
+                    ? (n as HTMLInputElement)
+                    : null;
+
+                // 1) Self
+                const self = asInput(el as Element);
+                if (self) return self;
+
+                // 2) Label association
+                const label = (el as HTMLElement).closest("label");
+                if (label?.htmlFor) {
+                  const byId = doc.getElementById(label.htmlFor);
+                  const a = asInput(byId);
+                  if (a) return a;
+                }
+
+                // 3) Descendants
+                const desc = (el as Element).querySelector(
+                  'input[type="file"]',
+                );
+                const aDesc = asInput(desc);
+                if (aDesc) return aDesc;
+
+                // 4) Up to 5 ancestors, then search within each ancestor subtree
+                let cur: Element | null = (el as Element).parentElement;
+                for (let i = 0; i < 5 && cur; i++) {
+                  const within = cur.querySelector('input[type="file"]');
+                  const a = asInput(within);
+                  if (a) return a;
+                  cur = cur.parentElement;
+                }
+                return null;
+              },
+              undefined as unknown,
+            );
+
+            const el = inputHandle.asElement?.();
+            if (el) {
+              // Cast to Playwright's ElementHandle<HTMLInputElement>
+              const fileEl = el as unknown as {
+                setInputFiles: (files: unknown) => Promise<void>;
+              };
+              await fileEl.setInputFiles(filesArg);
+              await this.stagehandPage._waitForSettledDom();
+              return finish({
+                success: true,
+                method: "fallback",
+                hint,
+                selector: candidate.selector,
+                fileName:
+                  typeof file === "string" ? file.split("/").pop() : file?.name,
+                message: "File attached via heuristic input lookup",
+              });
+            }
+          }
+        } catch {
+          // fall through
+        }
+      }
+    } catch {
+      // observe may fail; continue with global heuristics
+    }
+
+    // 2) As a last resort, try the first file input on the page
+    try {
+      const anyInput = this.stagehandPage.page.locator('input[type="file"]');
+      if (await anyInput.count()) {
+        await anyInput.first().setInputFiles(filesArg);
+        await this.stagehandPage._waitForSettledDom();
+        return finish({
+          success: true,
+          method: "input",
+          hint,
+          selector: 'input[type="file"]',
+          fileName:
+            typeof file === "string" ? file.split("/").pop() : file?.name,
+          message: "File attached via first file input on page",
+        });
+      }
+    } catch {
+      void 0; // ignore
+    }
+
+    // 3) Final fallback: wait explicitly for a file input and set files
+    try {
+      const handle = await this.stagehandPage.page.waitForSelector(
+        'input[type="file"]',
+        { timeout: 5000 },
+      );
+      if (handle) {
+        await handle.setInputFiles(filesArg);
+        await this.stagehandPage._waitForSettledDom();
+        return finish({
+          success: true,
+          method: "input",
+          hint,
+          selector: 'input[type="file"]',
+          fileName:
+            typeof file === "string" ? file.split("/").pop() : file?.name,
+          message: "File attached via awaited file input",
+        });
+      }
+    } catch {
+      void 0; // ignore
+    }
+
+    // 4) Cross-frame fallback: search all frames for a file input
+    try {
+      const frames = this.stagehandPage.page.frames();
+      for (const frame of frames) {
+        const floc = frame.locator('input[type="file"]');
+        if (await floc.count()) {
+          await floc.first().setInputFiles(filesArg);
+          await this.stagehandPage._waitForSettledDom();
+          return finish({
+            success: true,
+            method: "input",
+            hint,
+            selector: 'input[type="file"]',
+            fileName:
+              typeof file === "string" ? file.split("/").pop() : file?.name,
+            message: "File attached via frame file input",
+          });
+        }
+      }
+    } catch {
+      void 0; // ignore
+    }
+
+    // 5) Absolute selector fallbacks using page.setInputFiles
+    try {
+      await this.stagehandPage.page.setInputFiles(
+        'input[type="file"]',
+        filesArg as unknown as string,
+      );
+      await this.stagehandPage._waitForSettledDom();
+      return finish({
+        success: true,
+        method: "input",
+        hint,
+        selector: 'input[type="file"]',
+        fileName: typeof file === "string" ? file.split("/").pop() : file?.name,
+        message: "File attached via page.setInputFiles type selector",
+      });
+    } catch {
+      void 0;
+    }
+
+    return finish({
+      success: false,
+      method: "fallback",
+      hint,
+      message: "Could not locate a file input or trigger a chooser",
     });
   }
 
