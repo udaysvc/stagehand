@@ -299,13 +299,15 @@ export type FileSpec =
   | string
   | {
       /** Absolute path on disk to the file. */
-      path?: string;
+      path: string;
+    }
+  | {
       /** Name to use for the file (required if using buffer). */
-      name?: string;
+      name: string;
       /** MIME type for the file (required if using buffer). */
-      mimeType?: string;
+      mimeType: string;
       /** Raw file bytes (requires name + mimeType). */
-      buffer?: Buffer;
+      buffer: Buffer;
     };
 
 export interface UploadResult {
