@@ -1,27 +1,11 @@
-import path from "node:path";
-import fs from "node:fs";
 // Import directly from local dist to ensure latest build is used
 import { Stagehand } from "../dist";
 import type { Page as PlaywrightPage } from "playwright";
 import StagehandConfig from "../stagehand.config";
 
-async function downloadFile(url: string, filename: string): Promise<string> {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Failed to download file: ${response.statusText}`);
-  }
-
-  const buffer = await response.arrayBuffer();
-  const filePath = path.join(process.cwd(), "downloads", filename);
-
-  // Ensure downloads directory exists
-  if (!fs.existsSync(path.dirname(filePath))) {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  }
-
-  fs.writeFileSync(filePath, Buffer.from(buffer));
-  return filePath;
-}
+// Load environment variables
+import dotenv from "dotenv";
+dotenv.config({ path: "../.env" });
 
 async function main() {
   // Accept file URL as command line argument or use default
@@ -29,19 +13,18 @@ async function main() {
   const targetPage =
     process.argv[3] || "https://ps.uci.edu/~franklin/doc/file_upload.html";
 
-  console.log(`Downloading file from: ${fileUrl}`);
+  console.log(`File URL: ${fileUrl}`);
   console.log(`Target page: ${targetPage}`);
 
-  const stagehand = new Stagehand({ ...StagehandConfig, verbose: 1 });
+  const stagehand = new Stagehand({
+    ...StagehandConfig,
+    verbose: 1,
+    modelName: "openai/gpt-4o-mini",
+  });
   await stagehand.init();
   const page = stagehand.page;
 
   try {
-    // Download the file dynamically
-    const filename = path.basename(fileUrl) || "downloaded_file";
-    const filePath = await downloadFile(fileUrl, filename);
-    console.log(`File downloaded to: ${filePath}`);
-
     // Navigate to the target page
     await page.goto(targetPage, {
       waitUntil: "domcontentloaded",
@@ -53,16 +36,21 @@ async function main() {
 
     // Debug: log accessibility tree (full)
     try {
-      const pw = page as unknown as PlaywrightPage;
-      const ax = await pw.accessibility.snapshot({ interestingOnly: false });
-      console.log("AX tree:");
-      console.log(JSON.stringify(ax, null, 2));
+      const ax = await page.evaluate(() => {
+        if (typeof window.getComputedStyle !== 'undefined') {
+          return document.querySelector('body')?.innerHTML || 'No body content';
+        }
+        return 'Accessibility snapshot not available';
+      });
+      console.log("Page content:");
+      console.log(ax);
     } catch (e) {
-      console.log("Failed to snapshot accessibility tree:", e);
+      console.log("Failed to get page content:", e);
     }
 
     // Upload using the new helper - let observe find the right input
-    const result = await stagehand.upload("Upload this file", filePath);
+    // Now we can pass the URL directly since upload() handles URLs
+    const result = await stagehand.upload("Upload this file", fileUrl);
     console.log("upload result:", result);
 
     // Try to submit the form using observe to find the submit button
@@ -104,21 +92,6 @@ async function main() {
 
     await page.waitForTimeout(1500);
   } finally {
-    // Clean up downloaded file
-    try {
-      const filePath = path.join(
-        process.cwd(),
-        "downloads",
-        path.basename(fileUrl) || "downloaded_file",
-      );
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-        console.log("Cleaned up downloaded file");
-      }
-    } catch (e) {
-      console.log("Failed to clean up file:", e);
-    }
-
     await stagehand.close();
   }
 }

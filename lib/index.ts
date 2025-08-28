@@ -920,8 +920,30 @@ export class Stagehand {
   public async upload(hint: string, file: FileSpec): Promise<UploadResult> {
     const page = this.stagehandPage.page;
 
-    const toSetInputArg = (f: FileSpec) => {
-      if (typeof f === "string") return f;
+    const toSetInputArg = async (f: FileSpec) => {
+      if (typeof f === "string") {
+        // If it's a URL, download and return a Buffer payload
+        if (/^https?:\/\//i.test(f)) {
+          const res = await fetch(f);
+          if (!res.ok) {
+            throw new StagehandError(
+              `Failed to download file: ${res.status} ${res.statusText}`,
+            );
+          }
+          const mimeType =
+            res.headers.get("content-type") || "application/octet-stream";
+          const urlPath = new URL(f).pathname;
+          const name = urlPath.split("/").pop() || "uploaded_file";
+          const arrayBuf = await res.arrayBuffer();
+          return {
+            name,
+            mimeType,
+            buffer: Buffer.from(arrayBuf),
+          } as { name: string; mimeType: string; buffer: Buffer };
+        }
+        // Otherwise treat as a local path if provided as string (kept for compatibility)
+        return f;
+      }
       if (f?.path) return f.path;
       if (f?.buffer && f?.name && f?.mimeType) {
         return { name: f.name, mimeType: f.mimeType, buffer: f.buffer } as {
@@ -931,111 +953,24 @@ export class Stagehand {
         };
       }
       throw new StagehandError(
-        "Invalid FileSpec. Provide a path or { buffer, name, mimeType }",
+        "Invalid FileSpec. Provide an http(s) URL, a path, or { buffer, name, mimeType }",
       );
     };
 
-    const filesArg = toSetInputArg(file);
+    const filesArg = await toSetInputArg(file);
 
     const finish = async (result: UploadResult): Promise<UploadResult> => {
       this.addToHistory("upload", { hint, file }, result);
       return result;
     };
 
-    // 0) Fast-path: obvious file inputs commonly used by simple forms
-    try {
-      const quickSelectors = ['input[type="file"]'];
-      for (const sel of quickSelectors) {
-        const loc = this.stagehandPage.page.locator(sel);
-        const found = await loc.count();
-        this.log({
-          category: "upload",
-          message: `quick selector scan`,
-          level: 1,
-          auxiliary: {
-            selector: { value: sel, type: "string" },
-            count: { value: String(found), type: "integer" },
-          },
-        });
-        if (found) {
-          try {
-            await loc.first().setInputFiles(filesArg);
-            // Do not require files.length here; some browsers mask it
-            await this.stagehandPage._waitForSettledDom();
-            return finish({
-              success: true,
-              method: "input",
-              hint,
-              selector: sel,
-              fileName:
-                typeof file === "string" ? file.split("/").pop() : file?.name,
-              message: "File attached via quick selector",
-            });
-          } catch (e) {
-            this.log({
-              category: "upload",
-              message: "setInputFiles via quick selector failed",
-              level: 1,
-              auxiliary: {
-                selector: { value: sel, type: "string" },
-                error: { value: String((e as Error).message), type: "string" },
-              },
-            });
-          }
-        }
-      }
-    } catch {
-      void 0; // ignore quick path errors
-    }
-
-    // 0.5) Generic chooser fallback via common button roles/names
-    try {
-      const roleButtons = [
-        this.stagehandPage.page.getByRole("button", { name: /choose file/i }),
-        this.stagehandPage.page.getByRole("button", { name: /browse/i }),
-        this.stagehandPage.page.getByRole("button", { name: /upload/i }),
-      ];
-
-      for (const btn of roleButtons) {
-        if (await btn.count()) {
-          const chooserPromise = this.stagehandPage.page.waitForEvent(
-            "filechooser",
-            { timeout: 5000 },
-          );
-          await btn
-            .first()
-            .click({ timeout: 2500 })
-            .catch((): void => {});
-          const chooser = await chooserPromise.catch(
-            (): FileChooser | undefined => undefined,
-          );
-          if (chooser) {
-            await chooser.setFiles(filesArg);
-            await this.stagehandPage._waitForSettledDom();
-            return finish({
-              success: true,
-              method: "chooser",
-              hint,
-              selector: 'role=button[name~="choose file"|"browse"|"upload"]',
-              fileName:
-                typeof file === "string" ? file.split("/").pop() : file?.name,
-              message: "File attached via role-based chooser",
-            });
-          }
-        }
-      }
-    } catch {
-      void 0; // ignore
-    }
-
-    // 1) Prefer a direct file input if we can find one by NL → selector
+    // Use NL→selector to locate the upload control strictly
     try {
       const [candidate] = await page.observe(
-        "find the file upload control or input for: " + String(hint),
+        "Find the file upload control or input for: " + String(hint),
       );
       if (candidate?.selector) {
         const raw = candidate.selector.replace(/^xpath=/i, "").trim();
-        // Use the same locator resolution strategy as act() does
         const locator = this.experimental
           ? await deepLocatorWithShadow(page, raw)
           : deepLocator(page, raw);
@@ -1058,17 +993,21 @@ export class Stagehand {
             hint,
             selector: candidate.selector,
             fileName:
-              typeof file === "string" ? file.split("/").pop() : file?.name,
+              typeof file === "string" && /^https?:/i.test(file)
+                ? new URL(file).pathname.split("/").pop() || undefined
+                : typeof file === "string"
+                  ? file.split("/").pop()
+                  : file?.name,
             message: "File attached via direct input",
           });
         }
 
-        // Try the filechooser path by clicking the hinted control
+        // Otherwise attempt to trigger a file chooser via the hinted control
         try {
           const chooserPromise = page.waitForEvent("filechooser", {
-            timeout: 5000,
+            timeout: 8000,
           });
-          await locator.click({ timeout: 2500 }).catch((): void => {});
+          await locator.click({ timeout: 3000 }).catch((): void => {});
           const chooser = await chooserPromise.catch(
             (): FileChooser | undefined => undefined,
           );
@@ -1081,12 +1020,16 @@ export class Stagehand {
               hint,
               selector: candidate.selector,
               fileName:
-                typeof file === "string" ? file.split("/").pop() : file?.name,
+                typeof file === "string" && /^https?:/i.test(file)
+                  ? new URL(file).pathname.split("/").pop() || undefined
+                  : typeof file === "string"
+                    ? file.split("/").pop()
+                    : file?.name,
               message: "File attached via file chooser",
             });
           }
         } catch {
-          void 0; // continue to heuristics below
+          void 0;
         }
 
         // Heuristic: find an associated file input near/within the hinted control
@@ -1137,7 +1080,6 @@ export class Stagehand {
 
             const el = inputHandle.asElement?.();
             if (el) {
-              // Cast to Playwright's ElementHandle<HTMLInputElement>
               const fileEl = el as unknown as {
                 setInputFiles: (files: unknown) => Promise<void>;
               };
@@ -1149,109 +1091,28 @@ export class Stagehand {
                 hint,
                 selector: candidate.selector,
                 fileName:
-                  typeof file === "string" ? file.split("/").pop() : file?.name,
+                  typeof file === "string" && /^https?:/i.test(file)
+                    ? new URL(file).pathname.split("/").pop() || undefined
+                    : typeof file === "string"
+                      ? file.split("/").pop()
+                      : file?.name,
                 message: "File attached via heuristic input lookup",
               });
             }
           }
         } catch {
-          // fall through
+          void 0;
         }
       }
     } catch {
-      // observe may fail; continue with global heuristics
-    }
-
-    // 2) As a last resort, try the first file input on the page
-    try {
-      const anyInput = this.stagehandPage.page.locator('input[type="file"]');
-      if (await anyInput.count()) {
-        await anyInput.first().setInputFiles(filesArg);
-        await this.stagehandPage._waitForSettledDom();
-        return finish({
-          success: true,
-          method: "input",
-          hint,
-          selector: 'input[type="file"]',
-          fileName:
-            typeof file === "string" ? file.split("/").pop() : file?.name,
-          message: "File attached via first file input on page",
-        });
-      }
-    } catch {
-      void 0; // ignore
-    }
-
-    // 3) Final fallback: wait explicitly for a file input and set files
-    try {
-      const handle = await this.stagehandPage.page.waitForSelector(
-        'input[type="file"]',
-        { timeout: 5000 },
-      );
-      if (handle) {
-        await handle.setInputFiles(filesArg);
-        await this.stagehandPage._waitForSettledDom();
-        return finish({
-          success: true,
-          method: "input",
-          hint,
-          selector: 'input[type="file"]',
-          fileName:
-            typeof file === "string" ? file.split("/").pop() : file?.name,
-          message: "File attached via awaited file input",
-        });
-      }
-    } catch {
-      void 0; // ignore
-    }
-
-    // 4) Cross-frame fallback: search all frames for a file input
-    try {
-      const frames = this.stagehandPage.page.frames();
-      for (const frame of frames) {
-        const floc = frame.locator('input[type="file"]');
-        if (await floc.count()) {
-          await floc.first().setInputFiles(filesArg);
-          await this.stagehandPage._waitForSettledDom();
-          return finish({
-            success: true,
-            method: "input",
-            hint,
-            selector: 'input[type="file"]',
-            fileName:
-              typeof file === "string" ? file.split("/").pop() : file?.name,
-            message: "File attached via frame file input",
-          });
-        }
-      }
-    } catch {
-      void 0; // ignore
-    }
-
-    // 5) Absolute selector fallbacks using page.setInputFiles
-    try {
-      await this.stagehandPage.page.setInputFiles(
-        'input[type="file"]',
-        filesArg as unknown as string,
-      );
-      await this.stagehandPage._waitForSettledDom();
-      return finish({
-        success: true,
-        method: "input",
-        hint,
-        selector: 'input[type="file"]',
-        fileName: typeof file === "string" ? file.split("/").pop() : file?.name,
-        message: "File attached via page.setInputFiles type selector",
-      });
-    } catch {
-      void 0;
+      // observe may fail
     }
 
     return finish({
       success: false,
       method: "fallback",
       hint,
-      message: "Could not locate a file input or trigger a chooser",
+      message: "Could not locate a file input or trigger a chooser via observe",
     });
   }
 
@@ -1354,5 +1215,6 @@ export * from "../types/stagehand";
 export * from "../types/operator";
 export * from "../types/agent";
 export * from "./llm/LLMClient";
+export * from "./llm/LLMProvider";
 export * from "../types/stagehandErrors";
 export * from "../types/stagehandApiErrors";
