@@ -978,11 +978,17 @@ export class Stagehand {
         // If this is a file input → set directly
         const isFileInput = await locator
           .evaluate(
-            (el): boolean =>
-              el.tagName.toLowerCase() === "input" &&
-              (el as HTMLInputElement).type === "file",
+            (el): boolean => {
+              const tagName = el.tagName.toLowerCase();
+              const type = (el as HTMLInputElement).type;
+              console.log(`DEBUG: Element tagName=${tagName}, type=${type}`);
+              return tagName === "input" && type === "file";
+            },
           )
-          .catch(() => false);
+          .catch((e) => {
+            console.log(`DEBUG: evaluate failed:`, e);
+            return false;
+          });
 
         if (isFileInput) {
           await locator.setInputFiles(filesArg);

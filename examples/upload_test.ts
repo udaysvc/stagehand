@@ -18,6 +18,7 @@ async function main() {
 
   const stagehand = new Stagehand({
     ...StagehandConfig,
+    env: "BROWSERBASE",
     verbose: 1,
     modelName: "openai/gpt-4o-mini",
   });
