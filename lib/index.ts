@@ -1105,7 +1105,7 @@ export class Stagehand {
         }
       }
     } catch {
-      // observe may fail
+      void 0;
     }
 
     return finish({
