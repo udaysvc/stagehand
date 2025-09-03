@@ -460,9 +460,39 @@ export async function fillOrType(ctx: MethodHandlerContext) {
   const { locator, xpath, args, logger } = ctx;
 
   try {
+    // Detect combobox behavior up front
+    const roleSelf = (
+      (await locator.getAttribute("role").catch((): string | null => null)) ??
+      ""
+    ).toLowerCase();
+    const autoSelf = (
+      (await locator
+        .getAttribute("aria-autocomplete")
+        .catch((): string | null => null)) ?? ""
+    ).toLowerCase();
+    const comboAncestor = locator.locator(
+      'xpath=ancestor-or-self::*[@role="combobox"][1]',
+    );
+    const hasComboAncestor = (await comboAncestor.count().catch(() => 0)) > 0;
+    const isCombobox =
+      hasComboAncestor ||
+      roleSelf === "combobox" ||
+      autoSelf === "list" ||
+      autoSelf === "both";
+
     await locator.fill("", { force: true });
     const text = args[0]?.toString() || "";
     await locator.fill(text, { force: true });
+
+    // If this is a combobox/typeahead, commit the selection via keyboard
+    if (isCombobox) {
+      await locator.focus().catch(() => {});
+      const page = locator.page();
+      await page.keyboard.press("Enter").catch(() => {});
+      // Optional nudge if Enter alone doesn't commit
+      await page.keyboard.press("ArrowDown").catch(() => {});
+      await page.keyboard.press("Enter").catch(() => {});
+    }
   } catch (e) {
     logger({
       category: "action",

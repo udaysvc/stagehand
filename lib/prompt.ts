@@ -162,7 +162,8 @@ export function buildActObservePrompt(
   If the action implies a key press, e.g., 'press enter', 'press a', 'press space', etc., always choose the press method with the appropriate key as argument — e.g. 'a', 'Enter', 'Space'. Do not choose a click action on an on-screen keyboard. Capitalize the first character like 'Enter', 'Tab', 'Escape' only for special keys.
   If the action implies choosing an option from a dropdown or combobox (native <select> OR ARIA/autocomplete), choose the selectOptionFromDropdown method. 
   Pass the visible option text as the single argument. Do NOT rely on typing alone; always select an option from the listbox to commit the value.
-  You may type to filter, but MUST finish by selecting an option from the listbox to commit the value.`;
+  You may type to filter, but MUST finish by selecting an option from the listbox to commit the value.
+  Do NOT return click or type for committing a dropdown/combobox value; always return selectOptionFromDropdown for selects/comboboxes/listboxes.`;
 
   // Add variable names (not values) to the instruction if any
   if (variables && Object.keys(variables).length > 0) {

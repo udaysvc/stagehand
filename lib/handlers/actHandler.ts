@@ -243,12 +243,22 @@ export class StagehandActHandler {
       );
     }
 
+    // Normalization shim: gently rewrite stray type-into-combobox to selection
+    const normalizedAction = (() => {
+      const a = action.trim();
+      const m = a.match(/^type\s+"([^"]+)"\s+into\s+(?:a\s+)?combobox/i);
+      if (m) {
+        return `selectOptionFromDropdown "${m[1]}"`;
+      }
+      return a;
+    })();
+
     // doObserveAndAct is just a wrapper of observeAct and actFromObserveResult.
     // we did this so that we can cleanly call a Promise.race, and race
     // doObserveAndAct against the user defined timeoutMs (if one was defined)
     const doObserveAndAct = async (): Promise<ActResult> => {
       const instruction = buildActObservePrompt(
-        action,
+        normalizedAction,
         Object.values(SupportedPlaywrightAction),
         actionOrOptions.variables,
       );
@@ -267,7 +277,7 @@ export class StagehandActHandler {
         return {
           success: false,
           message: `Failed to perform act: No observe results found for action`,
-          action,
+          action: normalizedAction,
         };
       }
 
