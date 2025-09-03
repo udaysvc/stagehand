@@ -1,6 +1,5 @@
 // Import directly from local dist to ensure latest build is used
 import { Stagehand } from "../dist";
-import type { Page as PlaywrightPage } from "playwright";
 import StagehandConfig from "../stagehand.config";
 
 // Load environment variables
@@ -38,10 +37,10 @@ async function main() {
     // Debug: log accessibility tree (full)
     try {
       const ax = await page.evaluate(() => {
-        if (typeof window.getComputedStyle !== 'undefined') {
-          return document.querySelector('body')?.innerHTML || 'No body content';
+        if (typeof window.getComputedStyle !== "undefined") {
+          return document.querySelector("body")?.innerHTML || "No body content";
         }
-        return 'Accessibility snapshot not available';
+        return "Accessibility snapshot not available";
       });
       console.log("Page content:");
       console.log(ax);

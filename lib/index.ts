@@ -944,20 +944,27 @@ export class Stagehand {
         // Otherwise treat as a local path if provided as string (kept for compatibility)
         return f;
       }
-      
+
       // Handle discriminated union types
-      if ('path' in f && f.path) {
+      if ("path" in f && f.path) {
         return f.path;
       }
-      
-      if ('buffer' in f && 'name' in f && 'mimeType' in f && f.buffer && f.name && f.mimeType) {
+
+      if (
+        "buffer" in f &&
+        "name" in f &&
+        "mimeType" in f &&
+        f.buffer &&
+        f.name &&
+        f.mimeType
+      ) {
         return { name: f.name, mimeType: f.mimeType, buffer: f.buffer } as {
           name: string;
           mimeType: string;
           buffer: Buffer;
         };
       }
-      
+
       throw new StagehandError(
         "Invalid FileSpec. Provide an http(s) URL, a path, or { buffer, name, mimeType }",
       );
@@ -983,13 +990,11 @@ export class Stagehand {
 
         // If this is a file input → set directly
         const isFileInput = await locator
-          .evaluate(
-            (el): boolean => {
-              const tagName = el.tagName.toLowerCase();
-              const type = (el as HTMLInputElement).type;
-              return tagName === "input" && type === "file";
-            },
-          )
+          .evaluate((el): boolean => {
+            const tagName = el.tagName.toLowerCase();
+            const type = (el as HTMLInputElement).type;
+            return tagName === "input" && type === "file";
+          })
           .catch(() => {
             return false;
           });
@@ -1007,7 +1012,9 @@ export class Stagehand {
                 ? new URL(file).pathname.split("/").pop() || undefined
                 : typeof file === "string"
                   ? file.split("/").pop()
-                  : ('name' in file ? file.name : undefined),
+                  : "name" in file
+                    ? file.name
+                    : undefined,
             message: "File attached via direct input",
           });
         }
@@ -1034,7 +1041,9 @@ export class Stagehand {
                   ? new URL(file).pathname.split("/").pop() || undefined
                   : typeof file === "string"
                     ? file.split("/").pop()
-                    : ('name' in file ? file.name : undefined),
+                    : "name" in file
+                      ? file.name
+                      : undefined,
               message: "File attached via file chooser",
             });
           }
@@ -1105,7 +1114,9 @@ export class Stagehand {
                     ? new URL(file).pathname.split("/").pop() || undefined
                     : typeof file === "string"
                       ? file.split("/").pop()
-                      : ('name' in file ? file.name : undefined),
+                      : "name" in file
+                        ? file.name
+                        : undefined,
                 message: "File attached via heuristic input lookup",
               });
             }

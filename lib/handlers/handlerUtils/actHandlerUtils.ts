@@ -517,21 +517,199 @@ export async function pressKey(ctx: MethodHandlerContext) {
 
 export async function selectOption(ctx: MethodHandlerContext) {
   const { locator, xpath, args, logger } = ctx;
+
+  const wanted = (args?.[0] ?? "").toString().trim();
+  if (!wanted) {
+    throw new PlaywrightCommandException("selectOption: missing option text");
+  }
+
+  const page = locator.page();
+  const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  // --- small helpers ---------------------------------------------------------
+  async function isComboboxExpanded(): Promise<boolean> {
+    const c = locator.locator('xpath=ancestor-or-self::*[@role="combobox"][1]');
+    const v =
+      (await c
+        .getAttribute("aria-expanded")
+        .catch((): string | null => null)) ??
+      (await locator
+        .getAttribute("aria-expanded")
+        .catch((): string | null => null)) ??
+      "";
+    return String(v).toLowerCase() === "true";
+  }
+
+  async function openMenu(): Promise<void> {
+    // Minimal but effective attempts; no heavy heuristics.
+    const attempts = [
+      async () => locator.click({ timeout: 800 }).catch(() => {}),
+      async () => page.keyboard.press("Space").catch(() => {}),
+      async () => page.keyboard.press("Enter").catch(() => {}),
+      async () => page.keyboard.press("ArrowDown").catch(() => {}),
+    ];
+    for (const a of attempts) {
+      if (await isComboboxExpanded()) break;
+      await a();
+    }
+  }
+
+  async function maybeTypeToFilter(text: string): Promise<void> {
+    // If it's an input (or behaves like one), type to filter.
+    const meta = await locator.evaluate((el) => ({
+      tag: (el.tagName || "").toLowerCase(),
+      role: (el.getAttribute("role") || "").toLowerCase(),
+    }));
+    if (meta.tag === "input" || meta.role === "combobox") {
+      await locator.fill("", { force: true }).catch(() => {});
+      await locator.type(text, { delay: 10 }).catch(() => {});
+    }
+  }
+
+  async function getListboxScoped(): Promise<Locator> {
+    // 1) aria-controls from self or nearest combobox ancestor
+    const combo = locator.locator(
+      'xpath=ancestor-or-self::*[@role="combobox"][1]',
+    );
+    const controlsId =
+      (await locator
+        .getAttribute("aria-controls")
+        .catch((): string | null => null)) ||
+      (await combo
+        .getAttribute("aria-controls")
+        .catch((): string | null => null)) ||
+      "";
+    if (controlsId) return page.locator(`#${controlsId}[role="listbox"]`);
+
+    // 2) nearest visible listbox on page (works with portals)
+    const all = page.getByRole("listbox");
+    const n = await all.count().catch(() => 0);
+    if (!n) return all.first();
+    for (let i = 0; i < n; i++) {
+      const lb = all.nth(i);
+      if (await lb.isVisible().catch(() => false)) return lb;
+    }
+    return all.first();
+  }
+
+  async function committedMatches(text: string): Promise<boolean> {
+    // (a) input value
+    const val = (await locator.inputValue().catch(() => ""))?.trim() || "";
+    if (val && new RegExp(escapeRegex(text), "i").test(val)) return true;
+
+    // (b) visible text on combobox control (covers non-input displays)
+    const combo = locator.locator(
+      'xpath=ancestor-or-self::*[@role="combobox"][1]',
+    );
+    const comboText =
+      (await combo.textContent().catch(() => ""))
+        ?.replace(/\s+/g, " ")
+        .trim() || "";
+    if (comboText && new RegExp(escapeRegex(text), "i").test(comboText))
+      return true;
+
+    // (c) aria-activedescendant content
+    const actId =
+      (await locator
+        .getAttribute("aria-activedescendant")
+        .catch((): string | null => null)) || "";
+    if (actId) {
+      const actText =
+        (
+          await page
+            .locator(`#${actId}`)
+            .textContent()
+            .catch(() => "")
+        )?.trim() || "";
+      if (actText && new RegExp(escapeRegex(text), "i").test(actText))
+        return true;
+    }
+    return false;
+  }
+
+  async function clickFallback(text: string): Promise<boolean> {
+    const lb = await getListboxScoped();
+    await lb.waitFor({ state: "visible", timeout: 3000 }).catch(() => {});
+
+    const exact = lb.getByRole("option", {
+      name: new RegExp(`^${escapeRegex(text)}$`, "i"),
+    });
+    if (await exact.isVisible().catch(() => false)) {
+      await exact.click({ timeout: 2000 }).catch(async () => {
+        await exact.click({ timeout: 2000, force: true }).catch(() => {});
+      });
+      return true;
+    }
+
+    const contains = lb
+      .getByRole("option", { name: new RegExp(escapeRegex(text), "i") })
+      .first();
+    if (await contains.isVisible().catch(() => false)) {
+      await contains.click({ timeout: 2000 }).catch(async () => {
+        await contains.click({ timeout: 2000, force: true }).catch(() => {});
+      });
+      return true;
+    }
+
+    return false;
+  }
+  // ---------------------------------------------------------------------------
+
+  // Native <select> fast-path
   try {
-    const text = args[0]?.toString() || "";
-    await locator.selectOption(text, { timeout: 5000 });
-  } catch (e) {
+    const tag = await locator.evaluate((el) => el.tagName?.toLowerCase() || "");
+    if (tag === "select") {
+      try {
+        await locator.selectOption({ label: wanted }, { timeout: 5000 });
+      } catch {
+        await locator.selectOption({ value: wanted }, { timeout: 5000 });
+      }
+      return;
+    }
+  } catch {
+    /* fall through to ARIA path */
+  }
+
+  try {
+    // Focus, open, type to filter
+    await locator.scrollIntoViewIfNeeded().catch(() => {});
+    await locator.focus().catch(() => {});
+    await openMenu();
+    await maybeTypeToFilter(wanted);
+
+    // --- Keyboard-first commit ---
+    await page.keyboard.press("Enter").catch(() => {});
+
+    // Verify; if committed, we're done.
+    if (await committedMatches(wanted)) return;
+
+    // Fallback 1: try clicking a visible matching option
+    const clicked = await clickFallback(wanted);
+    if (clicked && (await committedMatches(wanted))) return;
+
+    // Fallback 2: one more type + Enter attempt
+    await locator.type(wanted, { delay: 10 }).catch(() => {});
+    await page.keyboard.press("Enter").catch(() => {});
+    if (await committedMatches(wanted)) return;
+
+    throw new PlaywrightCommandException(
+      `selectOption: option "${wanted}" did not commit`,
+    );
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : "selectOption failed";
+    const stack = e instanceof Error ? e.stack : "";
     logger({
       category: "action",
-      message: "error selecting option",
+      message: "error selecting option (keyboard-first)",
       level: 0,
       auxiliary: {
-        error: { value: e.message, type: "string" },
-        trace: { value: e.stack, type: "string" },
+        error: { value: message, type: "string" },
+        trace: { value: stack, type: "string" },
         xpath: { value: xpath, type: "string" },
+        option: { value: wanted, type: "string" },
       },
     });
-    throw new PlaywrightCommandException(e.message);
+    throw new PlaywrightCommandException(message);
   }
 }
 

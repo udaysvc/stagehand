@@ -18,10 +18,10 @@ export const custom_dropdown: EvalFunction = async ({
   try {
     const page = stagehand.page;
     await page.goto(
-      "https://browserbase.github.io/stagehand-eval-sites/sites/expand-dropdown/",
+      "https://job-boards.greenhouse.io/sharkninjaoperatingllc/jobs/4593795006",
     );
 
-    await page.act("click the 'Select a Country' dropdown");
+    await page.act("click the 'Location (City)' dropdown");
 
     // we are expecting stagehand to click the dropdown to expand it,
     // and therefore the available options should now be contained in the full
@@ -31,7 +31,7 @@ export const custom_dropdown: EvalFunction = async ({
     const extraction = await page.extract();
     const fullTree = extraction.page_text;
 
-    if (fullTree.includes("Canada")) {
+    if (fullTree.includes("Needham")) {
       return {
         _success: true,
         debugUrl,
