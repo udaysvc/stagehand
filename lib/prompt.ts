@@ -163,7 +163,8 @@ export function buildActObservePrompt(
   If the action implies choosing an option from a dropdown or combobox (native <select> OR ARIA/autocomplete), choose the selectOptionFromDropdown method. 
   Pass the visible option text as the single argument. Do NOT rely on typing alone; always select an option from the listbox to commit the value.
   You may type to filter, but MUST finish by selecting an option from the listbox to commit the value.
-  Do NOT return click or type for committing a dropdown/combobox value; always return selectOptionFromDropdown for selects/comboboxes/listboxes.`;
+  Do NOT return click or type for committing a dropdown/combobox value; always return selectOptionFromDropdown for selects/comboboxes/listboxes.
+  Note: Option lists may not appear in the accessibility tree until the combobox is opened and may be portal-rendered; do not infer option text from unrelated StaticText.`;
 
   // Add variable names (not values) to the instruction if any
   if (variables && Object.keys(variables).length > 0) {

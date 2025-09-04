@@ -226,6 +226,7 @@ export const methodHandlerMap: Record<
   nextChunk: scrollToNextChunk,
   prevChunk: scrollToPreviousChunk,
   selectOptionFromDropdown: selectOption,
+  selectOption: selectOption,
 };
 
 export async function scrollToNextChunk(ctx: MethodHandlerContext) {

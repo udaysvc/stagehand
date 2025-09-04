@@ -250,6 +250,12 @@ export class StagehandActHandler {
       if (m) {
         return `selectOptionFromDropdown "${m[1]}"`;
       }
+      const m2 = a.match(
+        /^(?:select|choose|pick|set)\s+['"“”]([^'"“”]+)['"“”](?:\s+.+)?$/i,
+      );
+      if (m2) {
+        return `selectOptionFromDropdown "${m2[1]}"`;
+      }
       return a;
     })();
 
