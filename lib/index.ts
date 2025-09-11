@@ -79,7 +79,7 @@ async function getBrowser(
   env: "LOCAL" | "BROWSERBASE" = "LOCAL",
   headless: boolean = false,
   logger: (message: LogLine) => void,
-  browserbaseSessionCreateParams?: Browserbase.Sessions.SessionCreateParams,
+  browserbaseSessionCreateParams?: ConstructorParams["browserbaseSessionCreateParams"],
   browserbaseSessionID?: string,
   localBrowserLaunchOptions?: LocalBrowserLaunchOptions,
 ): Promise<BrowserResult> {
@@ -172,6 +172,7 @@ async function getBrowser(
           stagehand: "true",
         },
       });
+      // Final projectId used: browserbaseSessionCreateParams.projectId || projectId
 
       sessionId = session.id;
       connectUrl = session.connectUrl;
@@ -383,7 +384,7 @@ export class Stagehand {
   protected apiKey: string | undefined;
   private projectId: string | undefined;
   private externalLogger?: (logLine: LogLine) => void;
-  private browserbaseSessionCreateParams?: Browserbase.Sessions.SessionCreateParams;
+  private browserbaseSessionCreateParams?: ConstructorParams["browserbaseSessionCreateParams"];
   public variables: { [key: string]: unknown };
   private contextPath?: string;
   public llmClient: LLMClient;
