@@ -40,10 +40,10 @@ import { StagehandContext } from "./StagehandContext";
 import { StagehandPage } from "./StagehandPage";
 import { StagehandAPI } from "./api";
 import { scriptContent } from "./dom/build/scriptContent";
-import { StagehandAgentHandler } from "./handlers/agentHandler";
-import { StagehandOperatorHandler } from "./handlers/operatorHandler";
 import { LLMClient } from "./llm/LLMClient";
 import { LLMProvider } from "./llm/LLMProvider";
+import { CuaAgentHandler } from "./handlers/cuaAgentHandler";
+import { StagehandAgentHandler } from "./handlers/stagehandAgentHandler";
 import { StagehandLogger } from "./logger";
 import {
   deepLocator,
@@ -79,7 +79,7 @@ async function getBrowser(
   env: "LOCAL" | "BROWSERBASE" = "LOCAL",
   headless: boolean = false,
   logger: (message: LogLine) => void,
-  browserbaseSessionCreateParams?: Browserbase.Sessions.SessionCreateParams,
+  browserbaseSessionCreateParams?: ConstructorParams["browserbaseSessionCreateParams"],
   browserbaseSessionID?: string,
   localBrowserLaunchOptions?: LocalBrowserLaunchOptions,
 ): Promise<BrowserResult> {
@@ -172,6 +172,7 @@ async function getBrowser(
           stagehand: "true",
         },
       });
+      // Final projectId used: browserbaseSessionCreateParams.projectId || projectId
 
       sessionId = session.id;
       connectUrl = session.connectUrl;
@@ -383,7 +384,7 @@ export class Stagehand {
   protected apiKey: string | undefined;
   private projectId: string | undefined;
   private externalLogger?: (logLine: LogLine) => void;
-  private browserbaseSessionCreateParams?: Browserbase.Sessions.SessionCreateParams;
+  private browserbaseSessionCreateParams?: ConstructorParams["browserbaseSessionCreateParams"];
   public variables: { [key: string]: unknown };
   private contextPath?: string;
   public llmClient: LLMClient;
@@ -1147,28 +1148,26 @@ export class Stagehand {
     ) => Promise<AgentResult>;
   } {
     if (!options || !options.provider) {
-      // use open operator agent
+      const executionModel = options?.executionModel;
+      const systemInstructions = options?.instructions;
 
       return {
         execute: async (instructionOrOptions: string | AgentExecuteOptions) => {
-          // Check if integrations are being used without experimental flag
           if (options?.integrations && !this.experimental) {
             throw new StagehandError(
               "MCP integrations are an experimental feature. Please enable experimental mode by setting experimental: true in the Stagehand constructor params.",
             );
           }
-
           const tools = options?.integrations
             ? await resolveTools(options?.integrations, options?.tools)
             : (options?.tools ?? {});
-
-          // later we want to abstract this to a function that also performs filtration/ranking of tools
-          return new StagehandOperatorHandler(
+          return new StagehandAgentHandler(
             this.stagehandPage,
             this.logger,
             this.llmClient,
+            executionModel,
+            systemInstructions,
             tools,
-            this.logInferenceToFile,
           ).execute(instructionOrOptions);
         },
       };
@@ -1193,7 +1192,7 @@ export class Stagehand {
           ? await resolveTools(options?.integrations, options?.tools)
           : (options?.tools ?? {});
 
-        const agentHandler = new StagehandAgentHandler(
+        const agentHandler = new CuaAgentHandler(
           this,
           this.stagehandPage,
           this.logger,
@@ -1257,7 +1256,6 @@ export * from "../types/agent";
 export * from "../types/browser";
 export * from "../types/log";
 export * from "../types/model";
-export * from "../types/operator";
 export * from "../types/page";
 export * from "../types/playwright";
 export * from "../types/stagehand";
