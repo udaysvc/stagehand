@@ -51,6 +51,7 @@ import {
 } from "./handlers/handlerUtils/actHandlerUtils";
 import { connectToMCPServer } from "./mcp/connection";
 import { resolveTools } from "./mcp/utils";
+import { applyDefaultBrowserSettingsViewport } from "./browserbaseDefaults";
 import { isRunningInBun, loadApiKeyFromEnv } from "./utils";
 
 dotenv.config({ path: ".env" });
@@ -164,11 +165,14 @@ async function getBrowser(
         );
       }
 
+      const sessionCreateParams = applyDefaultBrowserSettingsViewport(
+        browserbaseSessionCreateParams,
+      );
       const session = await browserbase.sessions.create({
         projectId,
-        ...browserbaseSessionCreateParams,
+        ...sessionCreateParams,
         userMetadata: {
-          ...(browserbaseSessionCreateParams?.userMetadata || {}),
+          ...(sessionCreateParams?.userMetadata || {}),
           stagehand: "true",
         },
       });
@@ -288,8 +292,8 @@ async function getBrowser(
       acceptDownloads: localBrowserLaunchOptions?.acceptDownloads ?? true,
       headless: localBrowserLaunchOptions?.headless ?? headless,
       viewport: {
-        width: localBrowserLaunchOptions?.viewport?.width ?? 1024,
-        height: localBrowserLaunchOptions?.viewport?.height ?? 768,
+        width: localBrowserLaunchOptions?.viewport?.width ?? 1288,
+        height: localBrowserLaunchOptions?.viewport?.height ?? 711,
       },
       locale: localBrowserLaunchOptions?.locale ?? "en-US",
       timezoneId: localBrowserLaunchOptions?.timezoneId ?? "America/New_York",
@@ -1220,12 +1224,23 @@ export class Stagehand {
             } else if (options.provider === "openai") {
               options.options.apiKey = process.env.OPENAI_API_KEY;
             } else if (options.provider === "google") {
-              options.options.apiKey = process.env.GOOGLE_API_KEY;
+              options.options.apiKey =
+                process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY;
             }
 
             if (!options.options.apiKey) {
+              let envVar;
+              if (options.provider === "anthropic") {
+                envVar = "ANTHROPIC_API_KEY";
+              } else if (options.provider === "openai") {
+                envVar = "OPENAI_API_KEY";
+              } else if (options.provider === "google") {
+                envVar = "GOOGLE_API_KEY or GEMINI_API_KEY";
+              } else {
+                envVar = "the appropriate API key environment variable";
+              }
               throw new StagehandError(
-                `API key not found for \`${options.provider}\` provider. Please set the ${options.provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"} environment variable or pass an apiKey in the options object.`,
+                `API key not found for \`${options.provider}\` provider. Please set the ${envVar} environment variable or pass an apiKey in the options object.`,
               );
             }
           }
